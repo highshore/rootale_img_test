@@ -1,0 +1,6 @@
+# This is the content for extra_model_paths.yaml
+comfyui:
+    base_model_paths:
+        checkpoints: /workspace/checkpoints
+        loras: /workspace/loras
+        vae: /workspace/vae
