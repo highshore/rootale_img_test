@@ -1,135 +1,120 @@
-# Qwen Image Runpod Endpoint
+# Qwen Image Edit Runpod Notes
 
-This workspace packages the `nunchaku-qwen-image-edit-2509-workflow.json` graph for a Runpod serverless endpoint. The ComfyUI server runs headlessly and `handler.py` patches inputs at runtime.
+## Current Status
+- ComfyUI workflow `nunchaku-qwen-image-edit-2509-workflow.json` is patched at runtime by `handler.py`.
+- All model assets live on the mounted Runpod volume (`/workspace`).
+- `extra_model_paths.yaml` now exposes the volume paths (including `diffusion_models`) so loaders can see the weights.
+- `nunchaku_versions.json` is generated via `python scripts/update_versions.py` inside the virtualenv.
 
-## Prerequisites
-
-- Linux box with NVIDIA GPU (24 GB VRAM recommended).
-- Python 3.10–3.13 (ComfyUI-Nunchaku does **not** support 3.14 yet).
-- Docker 24+ if you plan to build the container locally.
-
-## Local Python Setup
-
+## Pod Bring-Up (Verified Sequence)
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
+cd /workspace
+git clone https://github.com/<your-org>/rootale_img_test.git
+python3 -m venv rootale_img_test/.venv
+source rootale_img_test/.venv/bin/activate
 
-# PyTorch ≥ 2.5 is required before installing Nunchaku wheels.
-pip install torch==2.5.1 torchvision==0.16.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu118
-
-# Worker runtime dependencies
-pip install -r requirements.txt
-
-# Install the Nunchaku backend wheel that matches your torch/python build
-pip install https://github.com/nunchaku-tech/nunchaku/releases/download/v0.3.1/nunchaku-0.3.1+torch2.5-cp310-cp310-linux_x86_64.whl
-
-# Install the ComfyUI custom nodes
-pip install comfyui-nunchaku==1.0.2
-pip install git+https://github.com/ussoewwin/ComfyUI-QwenImageLoraLoader.git
-```
-
-> Nunchaku wheels are only published for Linux + NVIDIA GPUs. Use a Linux GPU host (Runpod pod, EC2, etc.) for dependency installation.
-
-## Runpod Pod Bring-Up
-
-1. Launch an RTX 5090 (or similar) template with the `runpod/ai-api:comfy-ui` image.
-2. Mount your persistent volume at `/workspace` for model assets (`checkpoints`, `loras`, `vae`).
-3. SSH or use WebTerminal, then execute:
-
-```bash
 git clone https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI
 pip install --no-cache-dir -r requirements.txt
+
+pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cu118
+pip install --no-cache-dir torchvision==0.20.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+pip install --no-cache-dir torchaudio==2.5.1
+pip install --no-cache-dir --no-binary insightface insightface==0.7.3
+pip install --no-cache-dir --no-deps git+https://github.com/nunchaku-tech/ComfyUI-nunchaku.git@v1.0.2
+pip install --no-cache-dir runpod==1.7.13
 ```
 
-4. Copy this repository into the pod and run:
-
+Clone custom nodes directly:
 ```bash
-pip install --no-cache-dir torch==2.5.1 torchvision==0.16.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu118
-pip install --no-cache-dir -r /workspace/rootale_img_test/requirements.txt
-pip install --no-cache-dir https://github.com/nunchaku-tech/nunchaku/releases/download/v0.3.1/nunchaku-0.3.1+torch2.5-cp310-cp310-linux_x86_64.whl
-pip install --no-cache-dir comfyui-nunchaku==1.0.2
-pip install --no-cache-dir git+https://github.com/ussoewwin/ComfyUI-QwenImageLoraLoader.git
+git clone https://github.com/ussoewwin/ComfyUI-QwenImageLoraLoader.git \
+    /workspace/ComfyUI/custom_nodes/ComfyUI-QwenImageLoraLoader
 ```
 
-5. Place models under `/workspace`:
+Generate Nunchaku manifest:
+```bash
+cd /workspace/ComfyUI/custom_nodes/ComfyUI-nunchaku
+source /workspace/rootale_img_test/.venv/bin/activate
+python scripts/update_versions.py
+deactivate
+```
 
+## Model Assets (Run on the Pod)
 ```bash
 mkdir -p /workspace/checkpoints /workspace/loras /workspace/vae /ComfyUI/input /ComfyUI/output
+
+cd /workspace/checkpoints
+wget -O svdq-fp4_r128-qwen-image-edit-2509-lightningv2.0-4steps.safetensors \
+  https://huggingface.co/nunchaku-tech/nunchaku-qwen-image-edit-2509/resolve/main/svdq-fp4_r128-qwen-image-edit-2509-lightningv2.0-4steps.safetensors
+wget -O qwen_2.5_vl_7b_fp8_scaled.1.safetensors \
+  https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
+
+cd /workspace/loras
+wget -O Qwen-Anime-V1.safetensors \
+  https://huggingface.co/prithivMLmods/Qwen-Image-Anime-LoRA/resolve/main/qwen-anime.safetensors
+
+cd /workspace/vae
+wget -O qwen_image_vae.1.safetensors \
+  https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors
 ```
 
-Copy your assets into the matching folders (`/workspace/checkpoints/svdq-fp4_r128-qwen-image-edit-2509-lightningv2.0-4steps.safetensors`, `/workspace/vae/qwen_image_vae.1.safetensors`, `/workspace/loras/Qwen-Anime-V1.safetensors`, etc.).
+## ComfyUI Path Override
+`/workspace/ComfyUI/extra_model_paths.yaml`:
+```yaml
+runpod_workspace:
+  base_path: /workspace
+  diffusion_models: checkpoints
+  checkpoints: checkpoints
+  clip: checkpoints
+  text_encoders: checkpoints
+  vae: vae
+  loras: loras
+```
 
-## Docker Build (Serverless)
-
+Before launching ComfyUI in any shell:
 ```bash
+source /workspace/rootale_img_test/.venv/bin/activate
+export COMFYUI_EXTRA_MODEL_PATHS=/workspace/ComfyUI/extra_model_paths.yaml
+```
+
+Optional verification:
+```bash
+python - <<'PY'
+import sys
+sys.path.append("/workspace/ComfyUI")
+from utils import extra_config
+import folder_paths
+extra_config.load_extra_path_config("/workspace/ComfyUI/extra_model_paths.yaml")
+for key in ("diffusion_models", "clip", "text_encoders", "vae", "loras"):
+    files = folder_paths.get_filename_list(key)
+    print(f"{key}: {len(files)}")
+    for name in files:
+        print("  ", name)
+PY
+```
+
+Launch ComfyUI:
+```bash
+python main.py --listen 0.0.0.0 --port 18188
+```
+
+## Docker Build
+Once the host environment is happy:
+```bash
+cd /workspace/rootale_img_test
 docker build -t qwen-image-serverless:latest .
 ```
 
-The Dockerfile:
+Push to registry (GHCR/ECR/etc.) before wiring into Runpod serverless.
 
-- Starts from `runpod/pytorch:2.1.0`.
-- Installs ComfyUI and the frozen workflow.
-- Adds Nunchaku loaders and the Runpod worker SDK.
-- Starts the Runpod server (`python -m runpod.server`) which invokes `handler.py`.
+## Known Issue: RTX 5090 / sm_120
+- PyTorch 2.5.1+cu118 does not ship kernels for the RTX 5090 (sm_120).  
+- Any node that relies on CUDA kernels compiled for the VAE (e.g. `TextEncodeQwenImageEditPlus`) will throw `CUDA error: no kernel image is available...`.
 
-## Handler Contract
+### Workarounds
+1. **Use a supported GPU** (e.g. RTX 4090, A100, H100) until PyTorch publishes wheels with `sm_120` support.
+2. **Or install a nightly / custom PyTorch build** that includes sm_120 kernels, then rebuild/install the matching `nunchaku` wheel. This currently requires manual compilation and isn’t recommended for production yet.
+3. **Temporary fallback:** run VAE encode/decode on CPU by editing the workflow (set the VAE device inputs to `cpu`). This avoids the unsupported kernel but increases latency significantly.
 
-Send a `POST` payload (Runpod-compatible JSON):
-
-```json
-{
-  "input": {
-    "prompt": "aki_anime, cinematic...",
-    "negative_prompt": "",
-    "image_base64": "<PNG bytes>",
-    "seed": 659968189596312,
-    "steps": 2,
-    "cfg": 1.0,
-    "model_name": "svdq-fp4_r128-qwen-image-edit-2509-lightningv2.0-4steps.safetensors",
-    "vae_name": "qwen_image_vae.1.safetensors",
-    "clip_name": "qwen_2.5_vl_7b_fp8_scaled.1.safetensors",
-    "lora_name": "Qwen-Anime-V1.safetensors",
-    "lora_strength": 1.0,
-    "filename_prefix": "yc_founder"
-  }
-}
-```
-
-Response:
-
-```json
-{
-  "image_base64": "..."  // PNG image
-}
-```
-
-## Model Storage
-
-Edit `extra_model_paths.yaml` to align with your Runpod volume layout. By default it expects:
-
-- `/workspace/checkpoints`
-- `/workspace/loras`
-- `/workspace/vae`
-
-Mount those into the container when deploying the serverless endpoint.
-
-## Deployment Checklist
-
-- [ ] Upload image to GHCR/ECR.
-- [ ] Create Runpod serverless endpoint → GPU: RTX 5090, Idle Timeout: 10 min.
-- [ ] Set env vars:
-  - `COMFYUI_EXTRA_MODEL_PATHS=/ComfyUI/extra_model_paths.yaml`
-  - `PYTHONPATH=/ComfyUI`
-- [ ] Attach shared volume containing model assets.
-- [ ] Smoke test with sample payload above.
-- [ ] Monitor VRAM (`nvidia-smi`) and latency; tune `shift`, `cfg`, or steps for budget.
-
-## Troubleshooting
-
-- **Missing custom nodes** – confirm `pip show comfyui-nunchaku ComfyUI-QwenImageLoraLoader`.
-- **onnxruntime wheel not found** – verify the selected Nunchaku wheel matches your Python and torch versions.
-- **Missing models** – check volume mappings and `extra_model_paths.yaml` entries.
-- **High latency** – enable CPU offload (`"cpu_offload": "enable", "num_blocks_on_gpu": 1`) or provision larger VRAM.
+We should switch back to a GPU with official support (or wait for an updated PyTorch release) before finalizing the serverless image.
 
