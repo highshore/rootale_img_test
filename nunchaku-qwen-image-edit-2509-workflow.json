@@ -122,7 +122,8 @@
       "vae": [
         "39",
         0
-      ]
+      ],
+      "device": "cpu"
     },
     "class_type": "VAEEncode",
     "_meta": {
@@ -143,7 +144,8 @@
       "image1": [
         "78",
         0
-      ]
+      ],
+      "vae_device": "cpu"
     },
     "class_type": "TextEncodeQwenImageEditPlus",
     "_meta": {
@@ -164,7 +166,8 @@
       "image1": [
         "78",
         0
-      ]
+      ],
+      "vae_device": "cpu"
     },
     "class_type": "TextEncodeQwenImageEditPlus",
     "_meta": {

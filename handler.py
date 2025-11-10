@@ -10,8 +10,8 @@ import runpod
 
 sys.path.append("/ComfyUI")
 
-from main import load_workflow  # noqa: E402
-from server import PromptServer  # noqa: E402
+import comfy  # noqa: E402
+from server import PromptServer, load_workflow  # noqa: E402
 
 os.environ["COMFYUI_INPUT_PATH"] = "/ComfyUI/input"
 os.environ["COMFYUI_OUTPUT_PATH"] = "/ComfyUI/output"
@@ -20,11 +20,11 @@ WORKFLOW_NAME = "nunchaku-qwen-image-edit-2509-workflow.json"
 COMFY_INPUT = Path(os.environ["COMFYUI_INPUT_PATH"])
 COMFY_OUTPUT = Path(os.environ["COMFYUI_OUTPUT_PATH"])
 
-server = PromptServer()
-server.load_workflow(load_workflow(WORKFLOW_NAME))
+server = None
+workflow_template = None
 
 DEFAULTS = {
-    "model_name": "svdq-fp4_r128-qwen-image-edit-2509-lightningv2.0-4steps.safetensors",
+    "model_name": "svdq-int4_r128-qwen-image-edit-2509-lightningv2.0-4steps.safetensors",
     "lora_name": "Qwen-Anime-V1.safetensors",
     "lora_strength": 1.0,
     "clip_name": "qwen_2.5_vl_7b_fp8_scaled.1.safetensors",
@@ -54,6 +54,16 @@ DEFAULTS = {
     "filename_prefix": "ComfyUI",
     "image_name": "ComfyUI_00189_.png",
 }
+
+
+def ensure_comfy_ready():
+    global server, workflow_template
+    if server is None:
+        instance = PromptServer()
+        template = load_workflow(WORKFLOW_NAME)
+        instance.load_workflow(template)
+        server = instance
+        workflow_template = template
 
 
 def find_nodes(workflow):
@@ -123,7 +133,8 @@ def prepare_image(job_input):
 
 
 def build_prompt(job_input):
-    workflow = copy.deepcopy(server.workflow)
+    ensure_comfy_ready()
+    workflow = copy.deepcopy(workflow_template)
     nodes = find_nodes(workflow)
     image_name, cleanup_path = prepare_image(job_input)
 
@@ -176,6 +187,7 @@ def build_prompt(job_input):
 
 
 def handler(job):
+    ensure_comfy_ready()
     job_input = job.get("input", {})
     cleanup_path = None
     try:
