@@ -97,6 +97,12 @@ This folder documents how to pair our workflow with RunPod’s **ComfyUI – 509
 - To experiment locally inside the template pod, run the handler in-process with RunPod’s CLI or via `python handler.py` using whichever environment you chose (system Python or a local venv).
 - For production serverless deployments, keep using the Dockerfile in this directory. It mirrors the template’s Python 3.11 / CUDA 12.4 / PyTorch 2.9.0 stack so workers match your validation environment.
 
+## Serverless Deployment Notes
+- **Network volume mount path.** RunPod serverless workers mount network volumes at `/runpod-volume` by default (not `/workspace`). The bundled `extra_model_paths.yaml` now points there; if you customise the mount target, adjust `base_path` accordingly.
+- **Ensure model content exists.** The volume must contain `checkpoints/`, `checkpoints/clip/`, `vae/`, and `loras/` folders with the FP4 DiT checkpoint, text encoder, VAE, and LoRA before the first request—or the handler will report missing models.
+- **Base64 image inputs.** The handler accepts image bytes in either `image_base64` or `image_name`. If you supply a base64 string as `image_name`, it is auto-decoded into `/opt/ComfyUI/input`.
+- **Deploying updates.** After editing `handler.py` or `extra_model_paths.yaml`, rebuild and push `ghcr.io/highshore/qwen-blackwell:latest`, then redeploy the RunPod release with the new digest to clear the cached image on existing workers.
+
 ## Additional Tips
 - Reinstall third-party custom nodes that ship CUDA extensions so they rebuild against PyTorch 2.9.0 and SM 120.
 - If you see `Cannot execute because a node is missing the class_type property`, make sure step 4 completed—the Nunchaku/Qwen custom nodes must be present under `custom_nodes/`.
