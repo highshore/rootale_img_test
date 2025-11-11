@@ -1,0 +1,8 @@
+runpod_workspace:
+  base_path: /workspace
+  diffusion_models: checkpoints
+  checkpoints: checkpoints
+  clip: checkpoints
+  text_encoders: checkpoints
+  vae: vae
+  loras: loras
