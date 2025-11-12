@@ -29,6 +29,33 @@ const DEFAULT_INPUT = {
   timeout: 180,
 };
 
+const BASE64_REGEX = /^[A-Za-z0-9+/=]+$/;
+
+function sanitizeBase64Image(value?: string | null): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const sanitized = trimmed.startsWith("data:")
+    ? trimmed.split(",")[1] ?? ""
+    : trimmed.replace(/\s/g, "");
+
+  if (!sanitized) {
+    return null;
+  }
+
+  if (!BASE64_REGEX.test(sanitized)) {
+    return null;
+  }
+
+  return sanitized;
+}
+
 type RunpodRequestBody = {
   prompt: string;
   negativePrompt?: string;
@@ -37,6 +64,7 @@ type RunpodRequestBody = {
   cfg?: number;
   width?: number;
   height?: number;
+  imageBase64?: string;
 };
 
 export const dynamic = "force-dynamic";
@@ -76,6 +104,11 @@ export async function POST(request: NextRequest) {
         ? body.seed
         : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
   };
+
+  const sanitizedImage = sanitizeBase64Image(body.imageBase64);
+  if (sanitizedImage) {
+    payload.image_name = sanitizedImage;
+  }
 
   try {
     const response = await fetch(RUNPOD_RUN_URL, {

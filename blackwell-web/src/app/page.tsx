@@ -1,12 +1,14 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
   ClockIcon,
   PaperAirplaneIcon,
+  PhotoIcon,
   ServerIcon,
   SparklesIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { ArrowPathIcon } from "@heroicons/react/24/solid";
 
@@ -123,6 +125,8 @@ export default function Home() {
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [submittedAt, setSubmittedAt] = useState<number | null>(null);
   const [completedAt, setCompletedAt] = useState<number | null>(null);
+  const [inputImageDataUrl, setInputImageDataUrl] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const jobMeta = useMemo<RunpodJobMetadata | null>(() => {
     if (!job) {
@@ -260,6 +264,48 @@ export default function Home() {
     };
   }, [activeJobId]);
 
+  const handleImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      setInputImageDataUrl(null);
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      setError("Please select a valid image file.");
+      event.target.value = "";
+      return;
+    }
+
+    const maxSizeInBytes = 8 * 1024 * 1024; // 8MB
+    if (file.size > maxSizeInBytes) {
+      setError("Input image must be 8MB or smaller.");
+      event.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setInputImageDataUrl(reader.result);
+        setError(null);
+      }
+    };
+    reader.onerror = () => {
+      setError("We couldn't read the selected file. Try another image.");
+      event.target.value = "";
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveImage = () => {
+    setInputImageDataUrl(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -287,6 +333,17 @@ export default function Home() {
     setCompletedAt(null);
 
     try {
+      const imageBase64 = (() => {
+        if (!inputImageDataUrl) {
+          return undefined;
+        }
+        const [prefix, encoded] = inputImageDataUrl.split(",");
+        if (encoded) {
+          return encoded.trim();
+        }
+        return inputImageDataUrl.trim();
+      })();
+
       const response = await fetch("/api/runpod", {
         method: "POST",
         headers: {
@@ -300,6 +357,7 @@ export default function Home() {
           width,
           height,
           seed: parsedSeed,
+          imageBase64,
         }),
       });
 
@@ -422,6 +480,71 @@ export default function Home() {
                 className="mt-2 h-20 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-slate-400 focus:bg-white focus:ring-2 focus:ring-slate-200"
                 placeholder="Leave blank to omit. Separate unwanted traits with commas."
               />
+            </div>
+
+            <div>
+              <span className="flex items-center justify-between text-sm font-medium text-slate-700">
+                Input Image
+                <span className="text-xs text-slate-400">Optional</span>
+              </span>
+              <div className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-slate-500 shadow-inner">
+                      <PhotoIcon className="h-5 w-5" />
+                    </span>
+                    <div>
+                      <p className="text-sm font-medium text-slate-700">Upload a reference image</p>
+                      <p className="text-xs text-slate-400">PNG or JPG up to 8MB. We&apos;ll send it with your prompt.</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={fileInputRef}
+                      id="inputImage"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleImageChange}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-700"
+                    >
+                      Browse...
+                    </button>
+                    {inputImageDataUrl && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveImage}
+                        className="inline-flex items-center gap-1 rounded-lg border border-transparent bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
+                      >
+                        <XMarkIcon className="h-4 w-4" />
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {inputImageDataUrl ? (
+                  <div className="relative mt-4 overflow-hidden rounded-xl border border-slate-200 bg-slate-950/80">
+                    <div className="relative aspect-square w-full">
+                      <Image
+                        src={inputImageDataUrl}
+                        alt="Reference preview"
+                        fill
+                        sizes="(min-width: 1024px) 400px, 100vw"
+                        className="object-contain"
+                        unoptimized
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-4 text-xs text-slate-400">
+                    No image selected yet. Your job will fall back to the default placeholder image.
+                  </p>
+                )}
+              </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
