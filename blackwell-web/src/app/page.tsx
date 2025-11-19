@@ -1,7 +1,7 @@
 'use client';
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import NextImage from "next/image";
 import {
   ClockIcon,
   PaperAirplaneIcon,
@@ -90,6 +90,7 @@ type RunpodJobMetadata = {
   delayTime?: number;
   executionTime?: number;
   estimatedTime?: number;
+  transport?: string;
   [key: string]: unknown;
 };
 
@@ -102,10 +103,111 @@ type RunpodJobResponse = {
   estimatedTime?: number;
   streamId?: string;
   input?: unknown;
+  imageUrl?: string;
+  image_url?: string;
+  imageObjectKey?: string;
+  image_object_key?: string;
+  transport?: string;
   [key: string]: unknown;
 };
 
-const dimensionOptions = [512, 768, 1024, 1536];
+const MAX_DIMENSION = 768;
+const dimensionOptions = [512, 640, MAX_DIMENSION];
+
+type ProcessedImage = {
+  dataUrl: string;
+  blob: Blob;
+};
+
+const clampDimension = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return MAX_DIMENSION;
+  }
+  return Math.min(value, MAX_DIMENSION);
+};
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Failed to read file as data URL."));
+      }
+    };
+    reader.onerror = () => reject(new Error("Unable to read the selected file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined" || typeof window.Image === "undefined") {
+      reject(new Error("Image constructor is not available in this environment."));
+      return;
+    }
+    const image = new window.Image();
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to decode image."));
+    image.src = dataUrl;
+  });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error("Unable to convert canvas to Blob."));
+        }
+      },
+      type,
+      quality,
+    );
+  });
+}
+
+async function prepareImagePayload(file: File, maxDimension: number, preserveOriginal: boolean): Promise<ProcessedImage> {
+  if (preserveOriginal) {
+    const dataUrl = await readFileAsDataUrl(file);
+    return { dataUrl, blob: file };
+  }
+
+  const baseDataUrl = await readFileAsDataUrl(file);
+  try {
+    const image = await loadImageElement(baseDataUrl);
+    const largestSide = Math.max(image.width, image.height);
+    if (!largestSide || largestSide <= maxDimension) {
+      return { dataUrl: baseDataUrl, blob: file };
+    }
+
+    const scale = maxDimension / largestSide;
+    const targetWidth = Math.round(image.width * scale);
+    const targetHeight = Math.round(image.height * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Failed to acquire drawing context.");
+    }
+    context.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+    const mime = file.type && file.type.startsWith("image/") ? file.type : "image/png";
+    const quality = mime.includes("jpeg") || mime.includes("jpg") ? 0.92 : undefined;
+    const blob = await canvasToBlob(canvas, mime, quality);
+    const processedDataUrl = canvas.toDataURL(mime, quality);
+    return { dataUrl: processedDataUrl, blob };
+  } catch (error) {
+    console.warn("Image normalization failed, falling back to original data URL.", error);
+    return { dataUrl: baseDataUrl, blob: file };
+  }
+}
 
 export default function Home() {
   const [prompt, setPrompt] = useState(
@@ -114,8 +216,8 @@ export default function Home() {
   const [negativePrompt, setNegativePrompt] = useState("");
   const [steps, setSteps] = useState(2);
   const [cfg, setCfg] = useState(1);
-  const [width, setWidth] = useState(1024);
-  const [height, setHeight] = useState(1024);
+  const [width, setWidth] = useState(MAX_DIMENSION);
+  const [height, setHeight] = useState(MAX_DIMENSION);
   const [seed, setSeed] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -126,7 +228,13 @@ export default function Home() {
   const [submittedAt, setSubmittedAt] = useState<number | null>(null);
   const [completedAt, setCompletedAt] = useState<number | null>(null);
   const [inputImageDataUrl, setInputImageDataUrl] = useState<string | null>(null);
+  const [preserveInputQuality, setPreserveInputQuality] = useState(true);
+  const [imageObjectKey, setImageObjectKey] = useState<string | null>(null);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [storageUploadsEnabled, setStorageUploadsEnabled] = useState(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const selectedFileRef = useRef<File | null>(null);
 
   const jobMeta = useMemo<RunpodJobMetadata | null>(() => {
     if (!job) {
@@ -140,6 +248,9 @@ export default function Home() {
       delayTime: job.delayTime,
       executionTime: job.executionTime,
       estimatedTime: job.estimatedTime,
+      transport:
+        (typeof job.transport === "string" && job.transport) ||
+        (typeof job["transport"] === "string" ? (job["transport"] as string) : undefined),
     };
   }, [job]);
 
@@ -151,7 +262,7 @@ export default function Home() {
     [jobMeta],
   );
 
-  const isBusy = loading || polling;
+  const isBusy = loading || polling || uploadingImage;
 
   const jobDisplayPayload = useMemo(() => (job ? redactLargeStrings(job) : null), [job]);
 
@@ -167,6 +278,111 @@ export default function Home() {
 
     return `${elapsed.toFixed(1)}s`;
   }, [submittedAt, completedAt, imageDataUrl]);
+
+  const resolvePreviewFromPayload = useCallback(async (payload: RunpodJobResponse) => {
+    const immediateUrl =
+      (typeof payload.imageUrl === "string" && payload.imageUrl.trim()) ||
+      (typeof payload.image_url === "string" && payload.image_url.trim());
+    if (immediateUrl) {
+      return immediateUrl;
+    }
+
+    const objectKey =
+      (typeof payload.imageObjectKey === "string" && payload.imageObjectKey.trim()) ||
+      (typeof payload.image_object_key === "string" && payload.image_object_key.trim());
+    if (objectKey) {
+      try {
+        const response = await fetch(`/api/storage/download?key=${encodeURIComponent(objectKey)}`, {
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const data = (await response.json()) as { url?: string };
+          if (data.url) {
+            return data.url;
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch signed download URL:", error);
+      }
+    }
+
+    const base64 = extractBase64Image(payload.output);
+    if (base64) {
+      return `data:image/png;base64,${base64}`;
+    }
+    return null;
+  }, []);
+
+  const uploadReferenceBlob = useCallback(
+    async (blob: Blob, contentType: string, filename?: string) => {
+      if (!storageUploadsEnabled) {
+        return null;
+      }
+
+      try {
+        setUploadingImage(true);
+        setImageUploadError(null);
+        const formData = new FormData();
+        formData.append("file", blob, filename ?? "upload.bin");
+        formData.append("contentType", contentType);
+
+        const uploadResponse = await fetch("/api/storage/upload", {
+          method: "POST",
+          cache: "no-store",
+          body: formData,
+        });
+
+        if (uploadResponse.status === 503) {
+          setStorageUploadsEnabled(false);
+          return null;
+        }
+
+        if (!uploadResponse.ok) {
+          throw new Error(`Upload failed with status ${uploadResponse.status}`);
+        }
+
+        const payload = (await uploadResponse.json()) as { objectKey?: string };
+        if (!payload.objectKey) {
+          throw new Error("Upload response missing object key.");
+        }
+
+        setImageObjectKey(payload.objectKey);
+        return payload.objectKey;
+      } catch (error) {
+        console.error("Image upload failed:", error);
+        setImageUploadError("Image upload failed. Falling back to inline payload.");
+        setImageObjectKey(null);
+        return null;
+      } finally {
+        setUploadingImage(false);
+      }
+    },
+    [storageUploadsEnabled],
+  );
+
+  const processSelectedFile = useCallback(
+    async (file: File, options?: { preserve?: boolean }) => {
+      setImageObjectKey(null);
+      setImageUploadError(null);
+      const preserve = options?.preserve ?? preserveInputQuality;
+      const processed = await prepareImagePayload(file, MAX_DIMENSION, preserve);
+      setInputImageDataUrl(processed.dataUrl);
+
+      if (storageUploadsEnabled) {
+        const key = await uploadReferenceBlob(
+          processed.blob,
+          processed.blob.type || file.type || "application/octet-stream",
+          file.name,
+        );
+        if (!key && !storageUploadsEnabled) {
+          setImageObjectKey(null);
+        }
+      }
+
+      return processed;
+    },
+    [preserveInputQuality, storageUploadsEnabled, uploadReferenceBlob],
+  );
 
   useEffect(() => {
     if (!activeJobId) {
@@ -215,9 +431,9 @@ export default function Home() {
           }
           setPolling(false);
           setActiveJobId(null);
-          const base64 = extractBase64Image(payload.output);
-          if (base64) {
-            setImageDataUrl(`data:image/png;base64,${base64}`);
+          const previewUrl = await resolvePreviewFromPayload(payload);
+          if (previewUrl) {
+            setImageDataUrl(previewUrl);
             setCompletedAt(Date.now());
           } else {
             setCompletedAt(null);
@@ -262,13 +478,15 @@ export default function Home() {
         clearTimeout(timeoutId);
       }
     };
-  }, [activeJobId]);
+  }, [activeJobId, resolvePreviewFromPayload]);
 
-  const handleImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
 
     if (!file) {
       setInputImageDataUrl(null);
+      selectedFileRef.current = null;
+      setImageObjectKey(null);
       return;
     }
 
@@ -285,22 +503,23 @@ export default function Home() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setInputImageDataUrl(reader.result);
-        setError(null);
-      }
-    };
-    reader.onerror = () => {
-      setError("We couldn't read the selected file. Try another image.");
+    selectedFileRef.current = file;
+
+    try {
+      await processSelectedFile(file);
+      setError(null);
+    } catch (imageError) {
+      console.error("Image processing failed:", imageError);
+      setError("We couldn't process the selected file. Try another image.");
       event.target.value = "";
-    };
-    reader.readAsDataURL(file);
+    }
   };
 
   const handleRemoveImage = () => {
     setInputImageDataUrl(null);
+    setImageObjectKey(null);
+    setImageUploadError(null);
+    selectedFileRef.current = null;
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -337,36 +556,52 @@ export default function Home() {
         if (!inputImageDataUrl) {
           return undefined;
         }
-        const [prefix, encoded] = inputImageDataUrl.split(",");
+        const [, encoded] = inputImageDataUrl.split(",");
         if (encoded) {
           return encoded.trim();
         }
         return inputImageDataUrl.trim();
       })();
+      const requestImageBase64 = imageObjectKey ? undefined : imageBase64;
 
       const response = await fetch("/api/runpod", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
+                body: JSON.stringify({
           prompt: prompt.trim(),
           negativePrompt: negativePrompt.trim() || undefined,
           steps,
           cfg,
-          width,
-          height,
+                  width: clampDimension(width),
+                  height: clampDimension(height),
           seed: parsedSeed,
-          imageBase64,
+          imageBase64: requestImageBase64,
+          imageObjectKey: imageObjectKey ?? undefined,
         }),
       });
 
       if (!response.ok) {
-        const { error: responseError, details } = await response.json();
-        setError(
-          responseError ??
-            "The Runpod endpoint returned an unexpected error. Check the server logs for details.",
-        );
+        let responseError: string | undefined;
+        let details: string | undefined;
+        try {
+          const payload = await response.json();
+          responseError = payload?.error;
+          details = payload?.details;
+        } catch {
+          details = await response.text();
+        }
+        if (response.status === 413) {
+          setError(
+            "The request was too large for the accelerator. Use storage uploads or disable “Preserve original resolution.”",
+          );
+        } else {
+          setError(
+            responseError ??
+              "The Runpod endpoint returned an unexpected error. Check the server logs for details.",
+          );
+        }
         if (details) {
           console.error("Runpod error details:", details);
         }
@@ -382,9 +617,9 @@ export default function Home() {
       const status = payload.status?.toUpperCase();
 
       if (status && ["COMPLETED", "FINISHED", "SUCCESS"].includes(status)) {
-        const base64 = extractBase64Image(payload.output);
-        if (base64) {
-          setImageDataUrl(`data:image/png;base64,${base64}`);
+        const previewUrl = await resolvePreviewFromPayload(payload);
+        if (previewUrl) {
+          setImageDataUrl(previewUrl);
           setCompletedAt(Date.now());
         } else {
           setCompletedAt(null);
@@ -495,7 +730,9 @@ export default function Home() {
                     </span>
                     <div>
                       <p className="text-sm font-medium text-slate-700">Upload a reference image</p>
-                      <p className="text-xs text-slate-400">PNG or JPG up to 8MB. We&apos;ll send it with your prompt.</p>
+                      <p className="text-xs text-slate-400">
+                        PNG or JPG up to 8MB. Use the toggle below if you prefer automatic downsizing to ≤{MAX_DIMENSION}px.
+                      </p>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -526,10 +763,51 @@ export default function Home() {
                     )}
                   </div>
                 </div>
+                <div className="mt-3 space-y-1 text-xs">
+                  {uploadingImage && (
+                    <p className="text-slate-500">Uploading image to RunPod storage…</p>
+                  )}
+                  {imageObjectKey && !uploadingImage && storageUploadsEnabled && (
+                    <p className="text-slate-500">
+                      Image staged via storage: <span className="font-mono text-slate-700">{imageObjectKey}</span>
+                    </p>
+                  )}
+                  {imageUploadError && <p className="text-red-600">{imageUploadError}</p>}
+                  {!storageUploadsEnabled && (
+                    <p className="text-amber-600">Storage uploads unavailable—falling back to inline payloads.</p>
+                  )}
+                </div>
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white/80 px-4 py-3">
+                  <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+                      checked={preserveInputQuality}
+                      onChange={async (event) => {
+                        const next = event.target.checked;
+                        setPreserveInputQuality(next);
+                        const currentFile = selectedFileRef.current;
+                        if (currentFile) {
+                          try {
+                            await processSelectedFile(currentFile, { preserve: next });
+                          } catch (processingError) {
+                            console.error("Image reprocessing failed:", processingError);
+                            setError("We couldn't process the selected file. Try another image.");
+                          }
+                        }
+                      }}
+                    />
+                    Preserve original resolution
+                  </label>
+                  <p className="mt-1 text-xs text-slate-400">
+                    When enabled we send your upload untouched (best quality, bigger payloads). Disable to auto-downscale
+                    to ≤{MAX_DIMENSION}px for faster, smaller requests.
+                  </p>
+                </div>
                 {inputImageDataUrl ? (
                   <div className="relative mt-4 overflow-hidden rounded-xl border border-slate-200 bg-slate-950/80">
                     <div className="relative aspect-square w-full">
-                      <Image
+                      <NextImage
                         src={inputImageDataUrl}
                         alt="Reference preview"
                         fill
@@ -593,12 +871,12 @@ export default function Home() {
                   htmlFor="width"
                   className="text-sm font-medium text-slate-700"
                 >
-                  Width
+                  Width (max {MAX_DIMENSION}px)
                 </label>
                 <select
                   id="width"
                   value={width}
-                  onChange={(event) => setWidth(Number(event.target.value))}
+                  onChange={(event) => setWidth(clampDimension(Number(event.target.value)))}
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm outline-none transition focus:border-slate-400 focus:bg-white focus:ring-2 focus:ring-slate-200"
                 >
                   {dimensionOptions.map((option) => (
@@ -613,12 +891,12 @@ export default function Home() {
                   htmlFor="height"
                   className="text-sm font-medium text-slate-700"
                 >
-                  Height
+                  Height (max {MAX_DIMENSION}px)
                 </label>
                 <select
                   id="height"
                   value={height}
-                  onChange={(event) => setHeight(Number(event.target.value))}
+                  onChange={(event) => setHeight(clampDimension(Number(event.target.value)))}
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm outline-none transition focus:border-slate-400 focus:bg-white focus:ring-2 focus:ring-slate-200"
                 >
                   {dimensionOptions.map((option) => (
@@ -679,7 +957,7 @@ export default function Home() {
               </h2>
               {imageDataUrl ? (
                 <div className="relative mt-4 aspect-square overflow-hidden rounded-xl border border-slate-200 bg-slate-900/80">
-                  <Image
+                  <NextImage
                     src={imageDataUrl}
                     alt="Generated result"
                     fill
