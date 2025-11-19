@@ -127,6 +127,7 @@ python main.py --listen 0.0.0.0 --port 18188
 1. **Generate an SSH key (if you don’t already have one dedicated to Runpod):**
    ```bash
    ssh-keygen -t ed25519 -f ~/.ssh/runpod_ed25519 -N ""
+   cat /Users/nespresso/.ssh/runpod_ed25519.pub
    ```
 2. **Upload the public key on the pod** (open the Runpod Web Terminal or any existing SSH session into the pod). Replace the placeholder with the contents of `~/.ssh/runpod_ed25519.pub`:
    ```bash
