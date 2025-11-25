@@ -1,24 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { BackgroundFormValues, CharacterFormValues, ComboFormValues } from "@/lib/generation";
 
-const MAX_IMAGE_DIMENSION = 768;
+const OUTPUT_WIDTH = Number.parseInt(process.env.RUNPOD_OUTPUT_WIDTH ?? "1664", 10);
+const OUTPUT_HEIGHT = Number.parseInt(process.env.RUNPOD_OUTPUT_HEIGHT ?? "928", 10);
 const DEFAULT_ENDPOINT_ID = "ul5kke5ddlrzhi";
 const RUNPOD_ENDPOINT_ID = process.env.RUNPOD_ENDPOINT_ID ?? DEFAULT_ENDPOINT_ID;
 
 const RUNPOD_PROXY_BASE_URL = (process.env.RUNPOD_PROXY_BASE_URL ??
   "http://a2ccc7a37a37df10c.awsglobalaccelerator.com"
 ).replace(/\/$/, "");
-const RUNPOD_DIRECT_BASE_URL = (process.env.RUNPOD_DIRECT_BASE_URL ?? "https://api.runpod.ai").replace(/\/$/, "");
-
 const RUNPOD_ACCELERATOR_BASE = `${RUNPOD_PROXY_BASE_URL}/v2/${RUNPOD_ENDPOINT_ID}`;
-const RUNPOD_DIRECT_BASE = `${RUNPOD_DIRECT_BASE_URL}/v2/${RUNPOD_ENDPOINT_ID}`;
-
 const RUNPOD_ACCELERATOR_RUN_URL = `${RUNPOD_ACCELERATOR_BASE}/run`;
-const RUNPOD_DIRECT_RUN_URL = `${RUNPOD_DIRECT_BASE}/run`;
-
 const RUNPOD_STATUS_URL = (id: string) => `${RUNPOD_ACCELERATOR_BASE}/status/${id}`;
 
 const ACCELERATOR_MAX_IMAGE_BYTES =
   Number.parseInt(process.env.RUNPOD_ACCELERATOR_MAX_IMAGE_BYTES ?? "", 10) || 700_000;
+const ALLOWED_RESOLUTIONS = new Set(["1328x1328", "1664x928"]);
 
 const DEFAULT_INPUT = {
   image_name:
@@ -34,8 +31,8 @@ const DEFAULT_INPUT = {
   scheduler: "simple",
   denoise: 1,
   shift: 3,
-  width: MAX_IMAGE_DIMENSION,
-  height: MAX_IMAGE_DIMENSION,
+  width: OUTPUT_WIDTH,
+  height: OUTPUT_HEIGHT,
   batch_size: 1,
   cpu_offload: "disable",
   num_blocks_on_gpu: 40,
@@ -45,13 +42,17 @@ const DEFAULT_INPUT = {
   timeout: 180,
 };
 
+type GenerationMode = "character" | "background" | "combo";
 const BASE64_REGEX = /^[A-Za-z0-9+/=]+$/;
 
-function clampDimension(value?: number | null) {
-  if (typeof value !== "number" || Number.isNaN(value) || value <= 0) {
-    return MAX_IMAGE_DIMENSION;
+function resolveDimensions(width?: number, height?: number) {
+  if (typeof width === "number" && typeof height === "number") {
+    const key = `${width}x${height}`;
+    if (ALLOWED_RESOLUTIONS.has(key)) {
+      return { width, height };
+    }
   }
-  return Math.min(value, MAX_IMAGE_DIMENSION);
+  return { width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT };
 }
 
 function sanitizeBase64Image(value?: string | null): string | null {
@@ -84,7 +85,8 @@ function estimateBase64Bytes(base64: string) {
 }
 
 type RunpodRequestBody = {
-  prompt: string;
+  mode?: GenerationMode;
+  prompt?: string;
   negativePrompt?: string;
   seed?: number;
   steps?: number;
@@ -92,8 +94,23 @@ type RunpodRequestBody = {
   width?: number;
   height?: number;
   imageBase64?: string;
-  imageObjectKey?: string;
   imageUrl?: string;
+  backgroundImageBase64?: string;
+  backgroundImageUrl?: string;
+  character?: CharacterFormValues;
+  background?: BackgroundFormValues;
+  combo?: ComboFormValues;
+  metadata?: Record<string, unknown>;
+};
+
+type RunpodInputPayload = typeof DEFAULT_INPUT & {
+  image_url?: string;
+  background_image_base64?: string;
+  mode?: GenerationMode;
+  character?: CharacterFormValues;
+  background?: BackgroundFormValues;
+  combo?: ComboFormValues;
+  metadata?: Record<string, unknown>;
 };
 
 export const dynamic = "force-dynamic";
@@ -107,16 +124,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
   }
 
-  if (!body.prompt || body.prompt.trim().length === 0) {
-    return NextResponse.json({ error: "Prompt is required." }, { status: 400 });
-  }
+  const { width, height } = resolveDimensions(body.width, body.height);
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  const negativePrompt = typeof body.negativePrompt === "string" ? body.negativePrompt.trim() : "";
 
-  const payload = {
+  const payload: RunpodInputPayload = {
     ...DEFAULT_INPUT,
-    prompt: body.prompt.trim(),
-    negative_prompt: body.negativePrompt?.trim() ?? DEFAULT_INPUT.negative_prompt,
-    width: clampDimension(body.width ?? DEFAULT_INPUT.width),
-    height: clampDimension(body.height ?? DEFAULT_INPUT.height),
+    width,
+    height,
     steps: body.steps ?? DEFAULT_INPUT.steps,
     cfg: body.cfg ?? DEFAULT_INPUT.cfg,
     seed:
@@ -126,42 +141,62 @@ export async function POST(request: NextRequest) {
   };
 
   const sanitizedImage = sanitizeBase64Image(body.imageBase64);
-  let imageBytes = 0;
+  let totalImageBytes = 0;
   if (sanitizedImage) {
     payload.image_name = sanitizedImage;
-    imageBytes = estimateBase64Bytes(sanitizedImage);
-  }
-
-  if (typeof body.imageObjectKey === "string" && body.imageObjectKey.trim().length > 0) {
-    payload.image_object_key = body.imageObjectKey.trim();
+    totalImageBytes += estimateBase64Bytes(sanitizedImage);
   }
 
   if (typeof body.imageUrl === "string" && body.imageUrl.trim().length > 0) {
     payload.image_url = body.imageUrl.trim();
   }
 
-  const shouldBypassAccelerator = imageBytes > ACCELERATOR_MAX_IMAGE_BYTES;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  if (shouldBypassAccelerator) {
-    const apiKey = process.env.RUNPOD_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "RUNPOD_API_KEY is not configured on the server." },
-        { status: 500 },
-      );
-    }
-    headers.Authorization = `Bearer ${apiKey}`;
+  if (prompt) {
+    payload.prompt = prompt;
+  }
+  if (negativePrompt) {
+    payload.negative_prompt = negativePrompt;
+  }
+  if (body.character) {
+    payload.character = body.character;
+  }
+  if (body.background) {
+    payload.background = body.background;
+  }
+  if (body.combo) {
+    payload.combo = body.combo;
   }
 
-  const runUrl = shouldBypassAccelerator ? RUNPOD_DIRECT_RUN_URL : RUNPOD_ACCELERATOR_RUN_URL;
+  const sanitizedBackground = sanitizeBase64Image(body.backgroundImageBase64);
+  if (sanitizedBackground) {
+    payload.background_image_base64 = sanitizedBackground;
+    totalImageBytes += estimateBase64Bytes(sanitizedBackground);
+  }
+
+  if (body.mode) {
+    payload.mode = body.mode;
+  }
+
+  if (body.metadata && typeof body.metadata === "object") {
+    payload.metadata = body.metadata;
+  }
+
+  if (totalImageBytes > ACCELERATOR_MAX_IMAGE_BYTES) {
+    return NextResponse.json(
+      {
+        error:
+          "The request payload is too large for the accelerator. Reduce the reference size, disable “Preserve original resolution,” or select the 1328×1328 preset.",
+      },
+      { status: 413 },
+    );
+  }
 
   try {
-    const response = await fetch(runUrl, {
+    const response = await fetch(RUNPOD_ACCELERATOR_RUN_URL, {
       method: "POST",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ input: payload }),
     });
 
@@ -171,7 +206,7 @@ export async function POST(request: NextRequest) {
         {
           error: "Runpod request failed.",
           details: errorText,
-          transport: shouldBypassAccelerator ? "direct" : "accelerator",
+          transport: "accelerator",
           status: response.status,
         },
         { status: response.status },
@@ -181,7 +216,7 @@ export async function POST(request: NextRequest) {
     const result = await response.json();
     return NextResponse.json({
       ...result,
-      transport: shouldBypassAccelerator ? "direct" : "accelerator",
+      transport: "accelerator",
     });
   } catch (error) {
     console.error("Runpod proxy error:", error);

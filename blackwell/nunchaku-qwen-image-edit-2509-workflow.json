@@ -1,7 +1,7 @@
 {
   "3": {
     "inputs": {
-      "seed": 659968189596312,
+      "seed": 384666187746351,
       "steps": 2,
       "cfg": 1,
       "sampler_name": "euler",
@@ -47,7 +47,7 @@
   },
   "38": {
     "inputs": {
-      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.1.safetensors",
+      "clip_name": "clip/qwen_2.5_vl_7b_fp8_scaled.1.safetensors",
       "type": "qwen_image",
       "device": "default"
     },
@@ -106,7 +106,7 @@
   },
   "78": {
     "inputs": {
-      "image": "ComfyUI_00189_.png"
+      "image": "학생증.JPG"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -122,8 +122,7 @@
       "vae": [
         "39",
         0
-      ],
-      "device": "cpu"
+      ]
     },
     "class_type": "VAEEncode",
     "_meta": {
@@ -145,7 +144,10 @@
         "78",
         0
       ],
-      "vae_device": "cpu"
+      "image2": [
+        "118",
+        0
+      ]
     },
     "class_type": "TextEncodeQwenImageEditPlus",
     "_meta": {
@@ -154,7 +156,7 @@
   },
   "111": {
     "inputs": {
-      "prompt": "aki_anime, masterpiece, ultra-detailed, cinematic wide shot, \nlow-angle side view of a young man (image1) sprinting through the school courtyard, \njacket fluttering behind him, dynamic motion blur, strong afternoon sunlight casting long shadows, \nwind and petals surrounding him, determined expression, \na medium-size empty white speech bubble with black outline floating upper-right, \nfilm-grain texture, warm golden light, outdoor red-brick school background, open sky.\n",
+      "prompt": "Combine the person in image1 into the image2 which is the background of the photo. Apply situational awareness and change the person's clothing or pose as you see fit",
       "clip": [
         "38",
         0
@@ -167,7 +169,10 @@
         "78",
         0
       ],
-      "vae_device": "cpu"
+      "image2": [
+        "118",
+        0
+      ]
     },
     "class_type": "TextEncodeQwenImageEditPlus",
     "_meta": {
@@ -176,8 +181,8 @@
   },
   "112": {
     "inputs": {
-      "width": 1024,
-      "height": 1024,
+      "width": 1664,
+      "height": 928,
       "batch_size": 1
     },
     "class_type": "EmptySD3LatentImage",
@@ -209,6 +214,15 @@
     "class_type": "NunchakuQwenImageLoraLoader",
     "_meta": {
       "title": "Nunchaku Qwen Image LoRA Loader"
+    }
+  },
+  "118": {
+    "inputs": {
+      "image": "penalty_pov.jpg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "이미지 로드"
     }
   }
 }

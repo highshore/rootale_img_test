@@ -6,3 +6,12 @@ runpod_workspace:
   text_encoders: checkpoints
   vae: vae
   loras: loras
+
+interactive_workspace:
+  base_path: /workspace/data
+  diffusion_models: checkpoints
+  checkpoints: checkpoints
+  clip: checkpoints/clip
+  text_encoders: checkpoints
+  vae: vae
+  loras: loras

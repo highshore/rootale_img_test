@@ -99,13 +99,8 @@ DEFAULTS = {
     "clip_type": "qwen_image",
     "clip_device": "cuda",
     "vae_name": "qwen_image_vae.1.safetensors",
-    "prompt": "aki_anime, masterpiece, ultra-detailed, cinematic wide shot, "
-    "low-angle side view of a young man (image1) sprinting through the school courtyard, "
-    "jacket fluttering behind him, dynamic motion blur, strong afternoon sunlight casting long shadows, "
-    "wind and petals surrounding him, determined expression, "
-    "a medium-size empty white speech bubble with black outline floating upper-right, "
-    "film-grain texture, warm golden light, outdoor red-brick school background, open sky.",
-    "negative_prompt": "",
+    "prompt": "production-ready anime concept art of a hero mid-action, dynamic lighting, cinematic depth",
+    "negative_prompt": "duplicate limbs, extra hands, cropped head, muddy textures, low detail, lowres, watermark, text artifacts",
     "seed": 659968189596312,
     "steps": 2,
     "cfg": 1.0,
@@ -122,6 +117,154 @@ DEFAULTS = {
     "filename_prefix": "ComfyUI",
     "image_name": "ComfyUI_00189_.png",
 }
+
+CHARACTER_NEGATIVE_BASE = DEFAULTS["negative_prompt"]
+BACKGROUND_NEGATIVE_BASE = (
+    "figures, person, character, humanoid silhouettes, messy perspective, blown highlights, chromatic aberration"
+)
+COMBO_NEGATIVE_BASE = (
+    "floating characters, mismatched shadows, double exposure, extra limbs, bad compositing, overexposed, motion blur"
+)
+NONE_TOKENS = {"", "none", "None", None}
+
+PLACEHOLDER_PIXEL_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAn0B9lqQ+wAAAABJRU5ErkJggg=="
+)
+
+
+def _clean_str(value):
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _is_active(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    return value.strip() and value.strip().lower() not in NONE_TOKENS
+
+
+def _build_prompts_from_structured_forms(job_input, dims: dict[str, int]) -> Optional[dict[str, str]]:
+    mode = _clean_str(job_input.get("mode"))
+    if not mode:
+        # No structured mode specified; fall back to legacy prompt field
+        return None
+
+    mode = mode.lower()
+    if mode == "character":
+        data = job_input.get("character")
+        if not isinstance(data, dict):
+            raise ValueError("`character` payload is required when mode is 'character'.")
+        prompt = _character_prompt(data, dims)
+        negative = _character_negative_prompt(data)
+        return {"prompt": prompt, "negative": negative}
+    if mode == "background":
+        data = job_input.get("background")
+        if not isinstance(data, dict):
+            raise ValueError("`background` payload is required when mode is 'background'.")
+        prompt = _background_prompt(data, dims)
+        negative = _background_negative_prompt(data)
+        return {"prompt": prompt, "negative": negative}
+    if mode == "combo":
+        data = job_input.get("combo")
+        if not isinstance(data, dict):
+            raise ValueError("`combo` payload is required when mode is 'combo'.")
+        prompt = _combo_prompt(data, dims)
+        negative = _combo_negative_prompt(data)
+        return {"prompt": prompt, "negative": negative}
+    return None
+
+
+def _character_prompt(data: dict, dims: dict[str, int]) -> str:
+    concept = _clean_str(data.get("concept"))
+    if not concept:
+        raise ValueError("character.concept is required.")
+    parts = ["ultra-detailed character concept, production-ready illustration", f"concept: {concept}"]
+    if _is_active(data.get("style")):
+        parts.append(f"style: {data['style']}")
+    if _is_active(data.get("hairStyle")) or _is_active(data.get("hairColor")):
+        style = data.get("hairStyle") if _is_active(data.get("hairStyle")) else "styled"
+        color = f", color {data['hairColor']}" if _is_active(data.get("hairColor")) else ""
+        parts.append(f"hair: {style}{color}")
+    if _is_active(data.get("eyeColor")) or _is_active(data.get("expression")):
+        descriptors = []
+        if _is_active(data.get("eyeColor")):
+            descriptors.append(f"eyes {data['eyeColor']}")
+        if _is_active(data.get("expression")):
+            descriptors.append(data["expression"])
+        if descriptors:
+            parts.append(f"face: {', '.join(descriptors)}")
+    wardrobe = _clean_str(data.get("wardrobe"))
+    if wardrobe:
+        parts.append(f"wardrobe: {wardrobe}")
+    props = _clean_str(data.get("props"))
+    if props:
+        parts.append(f"props: {props}")
+    if _is_active(data.get("pose")):
+        parts.append(f"pose: {data['pose']}")
+    if _is_active(data.get("lighting")):
+        parts.append(f"lighting: {data['lighting']}")
+    parts.append(f"final render {dims['width']}x{dims['height']}, cinematic depth of field")
+    return ", ".join(parts)
+
+
+def _character_negative_prompt(data: dict) -> str:
+    extra = _clean_str(data.get("negative"))
+    if extra:
+        return f"{CHARACTER_NEGATIVE_BASE}, {extra}"
+    return CHARACTER_NEGATIVE_BASE
+
+
+def _background_prompt(data: dict, dims: dict[str, int]) -> str:
+    location = _clean_str(data.get("location"))
+    if not location:
+        raise ValueError("background.location is required.")
+    parts = ["cinematic environment matte painting", f"location: {location}"]
+    if _is_active(data.get("environmentType")):
+        parts.append(f"environment type: {data['environmentType']}")
+    if _is_active(data.get("timeOfDay")):
+        parts.append(f"time of day: {data['timeOfDay']}")
+    if _is_active(data.get("palette")):
+        parts.append(f"color palette: {data['palette']}")
+    if _is_active(data.get("atmosphere")):
+        parts.append(f"atmosphere: {data['atmosphere']}")
+    if _is_active(data.get("focalElement")):
+        parts.append(f"focal element: {data['focalElement']}")
+    if _is_active(data.get("style")):
+        parts.append(f"style: {data['style']}")
+    parts.append(f"rendered at {dims['width']}x{dims['height']}, no characters")
+    return ", ".join(parts)
+
+
+def _background_negative_prompt(data: dict) -> str:
+    extra = _clean_str(data.get("negative"))
+    if extra:
+        return f"{BACKGROUND_NEGATIVE_BASE}, {extra}"
+    return BACKGROUND_NEGATIVE_BASE
+
+
+def _combo_prompt(data: dict, dims: dict[str, int]) -> str:
+    character = _clean_str(data.get("characterDescription"))
+    background = _clean_str(data.get("backgroundDescription"))
+    if not character or not background:
+        raise ValueError("combo.characterDescription and combo.backgroundDescription are required.")
+    parts = [
+        "hero shot blending character and environment",
+        f"character: {character}",
+        f"environment: {background}",
+    ]
+    interaction = _clean_str(data.get("interaction"))
+    if interaction:
+        parts.append(f"interaction: {interaction}")
+    parts.append(f"final frame {dims['width']}x{dims['height']}, matched lighting and contact shadows")
+    return ", ".join(parts)
+
+
+def _combo_negative_prompt(data: dict) -> str:
+    extra = _clean_str(data.get("negative"))
+    if extra:
+        return f"{COMBO_NEGATIVE_BASE}, {extra}"
+    return COMBO_NEGATIVE_BASE
 
 
 def storage_available() -> bool:
@@ -364,7 +507,10 @@ def find_nodes(workflow):
         elif node_type == "SaveImage":
             nodes["save_image"] = node_id
         elif node_type == "LoadImage":
-            nodes["load_image"] = node_id
+            if "load_image" not in nodes:
+                nodes["load_image"] = node_id
+            elif "background_load_image" not in nodes:
+                nodes["background_load_image"] = node_id
         elif node_type == "TextEncodeQwenImageEditPlus":
             prompt_value = node["inputs"].get("prompt", "")
             key = "positive" if prompt_value.strip() else "negative"
@@ -388,7 +534,17 @@ def find_nodes(workflow):
     return nodes
 
 
-def prepare_image(job_input, *, timeline: Optional[TimelineLogger] = None):
+def prepare_image(
+    job_input,
+    *,
+    base64_key: str = "image_base64",
+    object_key: str = "image_object_key",
+    url_key: str = "image_url",
+    name_key: str = "image_name",
+    default_name: Optional[str] = None,
+    fallback_base64: Optional[str] = None,
+    timeline: Optional[TimelineLogger] = None,
+):
     def decode_payload(payload: str) -> bytes:
         try:
             return base64.b64decode(payload, validate=True)
@@ -399,33 +555,33 @@ def prepare_image(job_input, *, timeline: Optional[TimelineLogger] = None):
         if timeline:
             timeline.mark(message)
 
-    image_name = job_input.get("image_name", DEFAULTS["image_name"])
+    image_name = job_input.get(name_key) or default_name or DEFAULTS["image_name"]
     image_bytes: Optional[bytes] = None
     created = False
 
-    storage_key = job_input.get("image_object_key") or job_input.get("input_object_key")
+    storage_key = job_input.get(object_key)
     if storage_key and image_bytes is None:
         if not storage_available():
             raise RuntimeError("Storage key provided but RunPod storage is not configured.")
         log(f"Downloading input image from storage ({storage_key})")
         image_bytes = download_storage_object(storage_key)
-        if not job_input.get("image_name"):
+        if not job_input.get(name_key):
             image_name = Path(storage_key).name or f"{uuid.uuid4().hex}.png"
 
-    image_url = job_input.get("image_url")
+    image_url = job_input.get(url_key)
     if image_bytes is None and image_url:
         log("Downloading input image from URL")
         try:
             image_bytes = download_http_resource(image_url)
         except Exception as exc:
             raise RuntimeError(f"Failed to download image from URL: {exc}") from exc
-        if not job_input.get("image_name"):
+        if not job_input.get(name_key):
             parsed = urlparse(image_url)
             candidate = Path(parsed.path).name
             if candidate:
                 image_name = candidate
 
-    image_data = job_input.get("image_base64")
+    image_data = job_input.get(base64_key)
     if image_bytes is None:
         if image_data:
             if isinstance(image_data, str):
@@ -440,6 +596,14 @@ def prepare_image(job_input, *, timeline: Optional[TimelineLogger] = None):
             if maybe_bytes is not None:
                 image_bytes = maybe_bytes
                 image_name = f"{uuid.uuid4().hex}.png"
+
+    if image_bytes is None and fallback_base64:
+        try:
+            image_bytes = decode_payload(fallback_base64)
+            if not image_name:
+                image_name = f"{base64_key}-{uuid.uuid4().hex}.png"
+        except Exception:
+            image_bytes = None
 
     if image_bytes:
         if not image_name:
@@ -459,10 +623,30 @@ def build_prompt(job_input, *, timeline: Optional[TimelineLogger] = None):
     ensure_comfy_ready()
     workflow = copy.deepcopy(workflow_template)
     nodes = find_nodes(workflow)
-    image_name, cleanup_path = prepare_image(job_input, timeline=timeline)
+    cleanup_paths: list[Path] = []
+    image_name, primary_cleanup = prepare_image(job_input, timeline=timeline)
+    if primary_cleanup:
+        cleanup_paths.append(primary_cleanup)
+
+    background_default_name = job_input.get("background_image_name") or f"background_{uuid.uuid4().hex}.png"
+    background_name, background_cleanup = prepare_image(
+        job_input,
+        base64_key="background_image_base64",
+        object_key="background_image_object_key",
+        url_key="background_image_url",
+        name_key="background_image_name",
+        default_name=background_default_name,
+        fallback_base64=PLACEHOLDER_PIXEL_BASE64,
+        timeline=timeline,
+    )
+    if background_cleanup:
+        cleanup_paths.append(background_cleanup)
 
     def set_input(name, key, value):
         workflow[nodes[name]]["inputs"][key] = value
+
+    width = int(job_input.get("width", DEFAULTS["width"]))
+    height = int(job_input.get("height", DEFAULTS["height"]))
 
     set_input("model_loader", "model_name", job_input.get("model_name", DEFAULTS["model_name"]))
     set_input("model_loader", "cpu_offload", job_input.get("cpu_offload", DEFAULTS["cpu_offload"]))
@@ -485,13 +669,29 @@ def build_prompt(job_input, *, timeline: Optional[TimelineLogger] = None):
     set_input("clip_loader", "device", job_input.get("clip_device", DEFAULTS["clip_device"]))
 
     set_input("vae_loader", "vae_name", job_input.get("vae_name", DEFAULTS["vae_name"]))
-    set_input("load_image", "image", image_name)
+    if "load_image" in nodes:
+        set_input("load_image", "image", image_name)
+    if "background_load_image" in nodes:
+        set_input("background_load_image", "image", background_name)
 
-    set_input("positive", "prompt", job_input.get("prompt", DEFAULTS["prompt"]))
-    set_input("negative", "prompt", job_input.get("negative_prompt", DEFAULTS["negative_prompt"]))
+    prompt_text = _clean_str(job_input.get("prompt") or job_input.get("prompt_text"))
+    negative_text = _clean_str(job_input.get("negative_prompt") or job_input.get("negativePrompt"))
 
-    set_input("latent", "width", int(job_input.get("width", DEFAULTS["width"])))
-    set_input("latent", "height", int(job_input.get("height", DEFAULTS["height"])))
+    if not prompt_text:
+        built = _build_prompts_from_structured_forms(job_input, {"width": width, "height": height})
+        if built:
+            prompt_text = built["prompt"]
+            negative_text = built["negative"]
+    if not prompt_text:
+        prompt_text = DEFAULTS["prompt"]
+    if not negative_text:
+        negative_text = DEFAULTS["negative_prompt"]
+
+    set_input("positive", "prompt", prompt_text)
+    set_input("negative", "prompt", negative_text)
+
+    set_input("latent", "width", width)
+    set_input("latent", "height", height)
     set_input("latent", "batch_size", int(job_input.get("batch_size", DEFAULTS["batch_size"])))
 
     set_input("sampling_wrapper", "shift", float(job_input.get("shift", DEFAULTS["shift"])))
@@ -506,7 +706,7 @@ def build_prompt(job_input, *, timeline: Optional[TimelineLogger] = None):
 
     set_input("save_image", "filename_prefix", job_input.get("filename_prefix", DEFAULTS["filename_prefix"]))
 
-    return workflow, nodes["save_image"], cleanup_path
+    return workflow, nodes["save_image"], cleanup_paths
 
 
 def handler(job):
@@ -525,9 +725,9 @@ def handler(job):
     timeline.mark("Comfy ready")
 
     job_input = job.get("input", {})
-    cleanup_path = None
+    cleanup_paths: list[Path] = []
     try:
-        workflow, output_node_id, cleanup_path = build_prompt(job_input, timeline=timeline)
+        workflow, output_node_id, cleanup_paths = build_prompt(job_input, timeline=timeline)
         timeline.mark("Workflow prepared")
     except Exception as exc:
         timeline.mark(f"Workflow preparation failed: {exc}", dedupe=False)
@@ -587,12 +787,13 @@ def handler(job):
                         if include_base64 or not uploaded:
                             with open(output_path, "rb") as created:
                                 encoded = base64.b64encode(created.read()).decode("utf-8")
-                            response_payload["image_base64"] = encoded
+                                response_payload["image_base64"] = encoded
                         timeline.mark("Response sent", dedupe=False)
                         os.remove(output_path)
                         server.prompt_queue.delete_history_item(prompt_id)
-                        if cleanup_path and cleanup_path.exists():
-                            cleanup_path.unlink()
+                        for path in cleanup_paths:
+                            if path and path.exists():
+                                path.unlink()
                         timeline.mark("Request completed", dedupe=False)
                         return response_payload
                 if status and not status.get("completed", True):
@@ -609,8 +810,9 @@ def handler(job):
         timeline.mark(f"An error occurred: {exc}", dedupe=False)
         return {"error": f"An error occurred: {exc}"}
     finally:
-        if cleanup_path and cleanup_path.exists():
-            cleanup_path.unlink()
+        for path in cleanup_paths:
+            if path and path.exists():
+                path.unlink()
 
 
 runpod.serverless.start({"handler": handler})
